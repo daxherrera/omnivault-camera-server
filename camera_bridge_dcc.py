@@ -35,6 +35,10 @@ WHITE_DESKEW_MAX_DEG = float(os.environ.get("WHITE_DESKEW_MAX_DEG", "15.0"))
 LINE_DESKEW_MIN_DEG = float(os.environ.get("LINE_DESKEW_MIN_DEG", "0.25"))
 LINE_DESKEW_MAX_DEG = float(os.environ.get("LINE_DESKEW_MAX_DEG", "12.0"))
 LINE_DESKEW_HOUGH_THRESHOLD = int(os.environ.get("LINE_DESKEW_HOUGH_THRESHOLD", "70"))
+ENABLE_COLOR_CORRECTION = os.environ.get("ENABLE_COLOR_CORRECTION", "1") != "0"
+SATURATION_GAIN = float(os.environ.get("SATURATION_GAIN", "1.14"))
+CLAHE_CLIP_LIMIT = float(os.environ.get("CLAHE_CLIP_LIMIT", "2.2"))
+GAMMA = float(os.environ.get("GAMMA", "1.0"))
 
 # digiCamControl HTTP server (enable in DCC: Tools > Settings > Webserver, port 5513)
 DCC_URL = os.environ.get("DCC_URL", "http://localhost:5513")
@@ -54,6 +58,42 @@ def get_jpg_files(folder):
         if f.lower().endswith(('.jpg', '.jpeg')):
             result.add(os.path.join(folder, f))
     return result
+
+
+def _wait_for_file_ready(path, timeout=10.0, stable_checks=3, poll=0.2):
+    """Wait until file exists, has non-zero size, and size is stable across checks."""
+    deadline = time.time() + timeout
+    last_size = -1
+    stable_count = 0
+
+    while time.time() < deadline:
+        try:
+            size = os.path.getsize(path)
+            if size > 0 and size == last_size:
+                stable_count += 1
+                if stable_count >= stable_checks:
+                    return True
+            else:
+                stable_count = 0
+            last_size = size
+        except OSError:
+            stable_count = 0
+            last_size = -1
+
+        time.sleep(poll)
+
+    return False
+
+
+def _read_image_with_retry(path, timeout=8.0, poll=0.25):
+    """Retry cv2 image load while camera software is still flushing file writes."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        img = cv2.imread(path)
+        if img is not None and img.size > 0:
+            return img
+        time.sleep(poll)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -589,6 +629,45 @@ def _sharpen(img):
     return cv2.addWeighted(img, 1.7, blurred, -0.7, 0)
 
 
+def _color_correct(img):
+    """Post-crop color correction tuned for slab/card photos."""
+    out = img.astype(np.float32)
+
+    # Gray-world white balance to neutralize color cast from lightbox/room light.
+    b_mean = float(np.mean(out[:, :, 0]))
+    g_mean = float(np.mean(out[:, :, 1]))
+    r_mean = float(np.mean(out[:, :, 2]))
+    avg = (b_mean + g_mean + r_mean) / 3.0
+    if b_mean > 1 and g_mean > 1 and r_mean > 1:
+        out[:, :, 0] *= avg / b_mean
+        out[:, :, 1] *= avg / g_mean
+        out[:, :, 2] *= avg / r_mean
+
+    out = np.clip(out, 0, 255).astype(np.uint8)
+
+    # Local contrast on L channel for cleaner whites and more readable text.
+    lab = cv2.cvtColor(out, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=CLAHE_CLIP_LIMIT, tileGridSize=(8, 8))
+    l = clahe.apply(l)
+    lab = cv2.merge((l, a, b))
+    out = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+
+    # Saturation boost for card artwork colors.
+    hsv = cv2.cvtColor(out, cv2.COLOR_BGR2HSV).astype(np.float32)
+    hsv[:, :, 1] = np.clip(hsv[:, :, 1] * SATURATION_GAIN, 0, 255)
+    out = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+    # Optional gamma for quick brightness tuning.
+    if abs(GAMMA - 1.0) > 1e-3:
+        gamma = max(0.2, min(3.0, GAMMA))
+        inv_gamma = 1.0 / gamma
+        table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in range(256)], dtype=np.uint8)
+        out = cv2.LUT(out, table)
+
+    return out
+
+
 def process_card_image(src_path: str, dst_path: str, rotate_only: bool = False):
     """
     Full processing pipeline:
@@ -598,7 +677,7 @@ def process_card_image(src_path: str, dst_path: str, rotate_only: bool = False):
     Falls back to a plain file copy if anything goes wrong.
     """
     try:
-        img = cv2.imread(src_path)
+        img = _read_image_with_retry(src_path, timeout=8.0, poll=0.25)
         if img is None:
             raise ValueError(f"cv2 could not open {src_path}")
 
@@ -642,7 +721,12 @@ def process_card_image(src_path: str, dst_path: str, rotate_only: bool = False):
             if cropped:
                 img, _ = _deskew_from_lines(img)
 
-            # 3. Sharpen
+            # 4. Color correction after crop/straighten.
+            if ENABLE_COLOR_CORRECTION:
+                img = _color_correct(img)
+                log.info("Applied color correction")
+
+            # 5. Sharpen
             img = _sharpen(img)
         else:
             log.info("rotate-only mode: skipping detection and sharpening")
@@ -683,6 +767,10 @@ class DigiCamControlCamera:
             new_files = after - before
             if new_files:
                 src = max(new_files, key=os.path.getmtime)
+                if not _wait_for_file_ready(src, timeout=8.0, stable_checks=3, poll=0.2):
+                    log.warning(f"New image not ready yet, continuing wait: {src}")
+                    time.sleep(0.3)
+                    continue
                 log.info(f"New image: {src}")
                 ts = time.strftime("%Y%m%d-%H%M%S")
                 dst = os.path.join(CAPTURE_DIR, f"IMG_{ts}.jpg")
