@@ -56,35 +56,90 @@ def _order_corners(pts):
 def _detect_card_contour(img):
     """
     Find the largest 4-sided contour in the image (the card slab).
+    Uses CLAHE for contrast enhancement and tries multiple Canny thresholds
+    and polygon epsilon values for robustness in lightbox conditions.
     Returns a (4,2) float32 array of corner points, or None if not found.
     """
     h, w = img.shape[:2]
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    edges = cv2.Canny(blurred, 40, 120)
 
-    # Dilate edges to close small gaps in the slab border
-    kernel = np.ones((3, 3), np.uint8)
-    edges = cv2.dilate(edges, kernel, iterations=2)
+    # CLAHE boosts local contrast — critical for even lightbox lighting
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    enhanced = clahe.apply(gray)
 
-    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    contours = sorted(contours, key=cv2.contourArea, reverse=True)
+    best_corners = None
+    best_area = 0
+    min_area = w * h * 0.15  # slab should cover at least 15% of frame
 
-    min_area = w * h * 0.10  # card slab must cover at least 10% of frame
-    for cnt in contours[:10]:
-        if cv2.contourArea(cnt) < min_area:
-            break
-        peri = cv2.arcLength(cnt, True)
-        approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
-        if len(approx) == 4:
-            log.info(f"Card contour found, area={cv2.contourArea(cnt):.0f}")
-            return approx.reshape(4, 2).astype("float32")
+    kernel = np.ones((5, 5), np.uint8)
+    for blur_k in [5, 9]:
+        blurred = cv2.GaussianBlur(enhanced, (blur_k, blur_k), 0)
+        for t1, t2 in [(30, 90), (50, 150), (80, 220)]:
+            edges = cv2.Canny(blurred, t1, t2)
+            edges = cv2.dilate(edges, kernel, iterations=3)
+            edges = cv2.erode(edges, kernel, iterations=1)
 
-    return None
+            contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            contours = sorted(contours, key=cv2.contourArea, reverse=True)
+
+            for cnt in contours[:5]:
+                area = cv2.contourArea(cnt)
+                if area < min_area or area <= best_area:
+                    break
+                peri = cv2.arcLength(cnt, True)
+                for eps in [0.01, 0.02, 0.03, 0.04, 0.05]:
+                    approx = cv2.approxPolyDP(cnt, eps * peri, True)
+                    if len(approx) == 4:
+                        best_corners = approx.reshape(4, 2).astype("float32")
+                        best_area = area
+                        break  # found a quad for this contour, move on
+
+    if best_corners is not None:
+        log.info(f"Card contour found, area={best_area:.0f}")
+    return best_corners
 
 
-def _perspective_crop(img, corners):
-    """Perspective-transform the image so the card fills the frame."""
+def _expand_corners(corners, margin):
+    """Push each corner outward from the center by `margin` pixels."""
+    center = corners.mean(axis=0)
+    expanded = []
+    for pt in corners:
+        direction = pt - center
+        norm = np.linalg.norm(direction)
+        expanded.append(pt + direction / norm * margin if norm > 0 else pt)
+    return np.array(expanded, dtype="float32")
+
+
+def _deskew_fallback(img):
+    """
+    When full quad detection fails, use Otsu threshold + minAreaRect to detect
+    the card's tilt and rotate the image to straighten it.
+    """
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    enhanced = clahe.apply(gray)
+    _, thresh = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return img
+    largest = max(contours, key=cv2.contourArea)
+    rect = cv2.minAreaRect(largest)
+    angle = rect[2]
+    if angle < -45:
+        angle += 90
+    if abs(angle) < 0.5:
+        return img  # negligible tilt, don't touch it
+    h, w = img.shape[:2]
+    M = cv2.getRotationMatrix2D((w / 2, h / 2), angle, 1.0)
+    log.info(f"Deskew fallback: correcting {angle:.1f}°")
+    return cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+
+
+def _perspective_crop(img, corners, margin=20):
+    """Perspective-transform the image so the card fills the frame.
+    `margin` expands the source corners outward so the card edge isn't clipped.
+    """
+    corners = _expand_corners(corners, margin)
     rect = _order_corners(corners)
     tl, tr, br, bl = rect
 
@@ -110,8 +165,8 @@ def _perspective_crop(img, corners):
 
 def _sharpen(img):
     """Unsharp mask: brings out edge detail and text on the card label."""
-    blurred = cv2.GaussianBlur(img, (0, 0), 3)
-    return cv2.addWeighted(img, 1.5, blurred, -0.5, 0)
+    blurred = cv2.GaussianBlur(img, (0, 0), 2)
+    return cv2.addWeighted(img, 1.7, blurred, -0.7, 0)
 
 
 def process_card_image(src_path: str, dst_path: str, rotate_only: bool = False):
@@ -138,7 +193,8 @@ def process_card_image(src_path: str, dst_path: str, rotate_only: bool = False):
                 img = _perspective_crop(img, corners)
                 log.info("Card detected and cropped")
             else:
-                log.warning("Card not detected — skipping crop, using full frame")
+                log.warning("Card quad not detected — attempting deskew fallback")
+                img = _deskew_fallback(img)
 
             # 3. Sharpen
             img = _sharpen(img)
