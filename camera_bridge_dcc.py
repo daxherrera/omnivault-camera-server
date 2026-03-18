@@ -35,7 +35,7 @@ WHITE_DESKEW_MAX_DEG = 15.0
 LINE_DESKEW_MIN_DEG = 0.25
 LINE_DESKEW_MAX_DEG = 12.0
 LINE_DESKEW_HOUGH_THRESHOLD = 70
-ENABLE_COLOR_CORRECTION = True
+ENABLE_COLOR_CORRECTION = False
 SATURATION_GAIN = 1.05
 CLAHE_CLIP_LIMIT = 1.25
 GAMMA = 1.0
@@ -633,7 +633,7 @@ def _perspective_crop(img, corners, margin=20):
 def _sharpen(img):
     """Unsharp mask: brings out edge detail and text on the card label."""
     blurred = cv2.GaussianBlur(img, (0, 0), 2)
-    return cv2.addWeighted(img, 1.7, blurred, -0.7, 0)
+    return cv2.addWeighted(img, 1.25, blurred, -0.25, 0)
 
 
 def _suppress_specular_scratches(img):
@@ -760,7 +760,7 @@ def process_card_image(src_path: str, dst_path: str, rotate_only: bool = False):
                     else:
                         log.warning("Card not detected for crop — leaving orientation as-is")
 
-            # 3. Color correction after crop.
+            # 3. Color correction intentionally disabled for color-safe output.
             if ENABLE_COLOR_CORRECTION:
                 img = _color_correct(img)
                 log.info("Applied color correction")
