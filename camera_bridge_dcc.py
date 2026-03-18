@@ -733,21 +733,18 @@ def process_card_image(src_path: str, dst_path: str, rotate_only: bool = False):
         log.info("Rotated 90° left")
 
         if not rotate_only:
-            # 2. Straighten first using white slab orientation.
-            img, _ = _deskew_from_white_slab(img)
-
-            # 3. Primary crop: shrink edges inward until color diverges from background.
+            # 2. Primary crop: shrink edges inward until color diverges from background.
             img, cropped = _crop_by_border_contrast(img)
 
-            # 3a. Secondary crop: white slab foreground (background agnostic).
+            # 2a. Secondary crop: white slab foreground (background agnostic).
             if not cropped:
                 img, cropped = _crop_bright_slab_foreground(img)
 
-            # 3b. Tertiary crop for darker backgrounds.
+            # 2b. Tertiary crop for darker backgrounds.
             if not cropped:
                 img, cropped = _crop_non_black_foreground(img)
 
-            # 3c. Optional perspective cleanup on already-cropped image.
+            # 2c. Optional perspective cleanup on already-cropped image.
             if not cropped:
                 corners = _detect_card_contour(img)
                 if corners is not None:
@@ -761,19 +758,14 @@ def process_card_image(src_path: str, dst_path: str, rotate_only: bool = False):
                         cropped = True
                         log.info("Card perspective-cropped using black-background detector")
                     else:
-                        log.warning("Card not detected for crop — attempting deskew fallback")
-                        img = _deskew_fallback(img)
+                        log.warning("Card not detected for crop — leaving orientation as-is")
 
-            # 3d. Post-crop straighten based on slab edge lines.
-            if cropped:
-                img, _ = _deskew_from_lines(img)
-
-            # 4. Color correction after crop/straighten.
+            # 3. Color correction after crop.
             if ENABLE_COLOR_CORRECTION:
                 img = _color_correct(img)
                 log.info("Applied color correction")
 
-            # 5. Sharpen
+            # 4. Sharpen
             img = _sharpen(img)
         else:
             log.info("rotate-only mode: skipping detection and sharpening")
