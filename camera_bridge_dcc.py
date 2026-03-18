@@ -17,6 +17,13 @@ import uvicorn
 CAPTURE_DIR = os.path.join(os.getcwd(), "captures")
 os.makedirs(CAPTURE_DIR, exist_ok=True)
 
+# Black background crop tuning
+CROP_MARGIN_PX = int(os.environ.get("CROP_MARGIN_PX", "20"))
+MIN_CROP_AREA_RATIO = float(os.environ.get("MIN_CROP_AREA_RATIO", "0.08"))
+BLACK_BG_DELTA = int(os.environ.get("BLACK_BG_DELTA", "22"))
+BRIGHT_SLAB_PERCENTILE = int(os.environ.get("BRIGHT_SLAB_PERCENTILE", "88"))
+BRIGHT_SLAB_DELTA = int(os.environ.get("BRIGHT_SLAB_DELTA", "8"))
+
 # digiCamControl HTTP server (enable in DCC: Tools > Settings > Webserver, port 5513)
 DCC_URL = os.environ.get("DCC_URL", "http://localhost:5513")
 
@@ -131,6 +138,131 @@ def _detect_card_on_black_background(img):
     return box.astype("float32")
 
 
+def _foreground_mask_from_black_background(img):
+    """
+    Build a mask for the slab/card foreground when background is black foam core.
+    Threshold is derived from border pixels (where background is expected).
+    """
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    h, w = gray.shape
+
+    bw = max(10, int(w * 0.06))
+    bh = max(10, int(h * 0.06))
+
+    border = np.concatenate([
+        gray[:bh, :].ravel(),
+        gray[h - bh:, :].ravel(),
+        gray[:, :bw].ravel(),
+        gray[:, w - bw:].ravel(),
+    ])
+
+    # Use a robust bright quantile from borders as black-bg estimate, then offset.
+    bg_level = int(np.percentile(border, 85))
+    threshold = min(255, bg_level + BLACK_BG_DELTA)
+    _, mask = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)
+
+    kernel = np.ones((7, 7), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+    return mask
+
+
+def _crop_non_black_foreground(img, margin=CROP_MARGIN_PX):
+    """
+    Crop to the largest non-black connected foreground region.
+    Returns (cropped_img, True) on success, else (original_img, False).
+    """
+    h, w = img.shape[:2]
+    mask = _foreground_mask_from_black_background(img)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return img, False
+
+    largest = max(contours, key=cv2.contourArea)
+    area = cv2.contourArea(largest)
+    if area < (w * h * MIN_CROP_AREA_RATIO):
+        return img, False
+
+    x, y, cw, ch = cv2.boundingRect(largest)
+    x0 = max(0, x - margin)
+    y0 = max(0, y - margin)
+    x1 = min(w, x + cw + margin)
+    y1 = min(h, y + ch + margin)
+
+    if (x1 - x0) < 50 or (y1 - y0) < 50:
+        return img, False
+
+    log.info(
+        f"Black-bg bbox crop: x={x0}, y={y0}, w={x1 - x0}, h={y1 - y0}, area={area:.0f}"
+    )
+    return img[y0:y1, x0:x1], True
+
+
+def _crop_bright_slab_foreground(img, margin=CROP_MARGIN_PX):
+    """
+    Background-agnostic crop tuned for white slabs.
+    Uses LAB lightness to isolate bright slab region and crops to the largest
+    plausible connected component.
+    """
+    h, w = img.shape[:2]
+
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+    light = lab[:, :, 0]
+    light = cv2.GaussianBlur(light, (5, 5), 0)
+
+    # Adaptive threshold from image brightness distribution.
+    bright_cutoff = int(np.percentile(light, BRIGHT_SLAB_PERCENTILE))
+    thresh_val = max(30, min(250, bright_cutoff - BRIGHT_SLAB_DELTA))
+    _, mask = cv2.threshold(light, thresh_val, 255, cv2.THRESH_BINARY)
+
+    kernel = np.ones((7, 7), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return img, False
+
+    min_area = w * h * MIN_CROP_AREA_RATIO
+    best = None
+    best_score = -1.0
+
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < min_area:
+            continue
+
+        x, y, cw, ch = cv2.boundingRect(cnt)
+        if cw < 50 or ch < 50:
+            continue
+
+        rect_area = float(cw * ch)
+        fill_ratio = area / rect_area if rect_area > 0 else 0
+
+        # Prefer large, rectangular-ish components.
+        score = area * (0.5 + min(fill_ratio, 1.0))
+        if score > best_score:
+            best_score = score
+            best = (x, y, cw, ch, area)
+
+    if best is None:
+        return img, False
+
+    x, y, cw, ch, area = best
+    x0 = max(0, x - margin)
+    y0 = max(0, y - margin)
+    x1 = min(w, x + cw + margin)
+    y1 = min(h, y + ch + margin)
+
+    if (x1 - x0) < 50 or (y1 - y0) < 50:
+        return img, False
+
+    log.info(
+        f"Bright-slab bbox crop: x={x0}, y={y0}, w={x1 - x0}, h={y1 - y0}, area={area:.0f}, thresh={thresh_val}"
+    )
+    return img[y0:y1, x0:x1], True
+
+
 def _expand_corners(corners, margin):
     """Push each corner outward from the center by `margin` pixels."""
     center = corners.mean(axis=0)
@@ -219,19 +351,27 @@ def process_card_image(src_path: str, dst_path: str, rotate_only: bool = False):
         log.info("Rotated 90° left")
 
         if not rotate_only:
-            # 2. Detect card and crop
-            corners = _detect_card_contour(img)
-            if corners is not None:
-                img = _perspective_crop(img, corners)
-                log.info("Card detected and cropped")
-            else:
-                bg_corners = _detect_card_on_black_background(img)
-                if bg_corners is not None:
-                    img = _perspective_crop(img, bg_corners)
-                    log.info("Card cropped using black-background detector")
+            # 2. Primary crop: white slab foreground (background agnostic).
+            img, cropped = _crop_bright_slab_foreground(img)
+
+            # 2a. Secondary crop for darker backgrounds.
+            if not cropped:
+                img, cropped = _crop_non_black_foreground(img)
+
+            # 2b. Optional perspective cleanup on already-cropped image.
+            if not cropped:
+                corners = _detect_card_contour(img)
+                if corners is not None:
+                    img = _perspective_crop(img, corners, margin=CROP_MARGIN_PX)
+                    log.info("Card detected and perspective-cropped")
                 else:
-                    log.warning("Card not detected for crop — attempting deskew fallback")
-                    img = _deskew_fallback(img)
+                    bg_corners = _detect_card_on_black_background(img)
+                    if bg_corners is not None:
+                        img = _perspective_crop(img, bg_corners, margin=CROP_MARGIN_PX)
+                        log.info("Card perspective-cropped using black-background detector")
+                    else:
+                        log.warning("Card not detected for crop — attempting deskew fallback")
+                        img = _deskew_fallback(img)
 
             # 3. Sharpen
             img = _sharpen(img)
