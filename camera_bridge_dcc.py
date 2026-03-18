@@ -53,6 +53,55 @@ GLARE_VALUE_THRESHOLD = 238
 GLARE_SAT_THRESHOLD = 48
 GLARE_REDUCTION_STRENGTH = 0.30
 
+DEFAULT_CAPTURE_PROFILE = "light"
+COLOR_PROFILES = {
+    "neutral": {
+        "description": "Crop + rotate + minimal processing",
+        "sat_gain": 1.00,
+        "val_gain": 1.00,
+        "glare_reduction": 0.00,
+        "glare_value_threshold": 255,
+        "glare_sat_threshold": 0,
+        "sharpen_strength": 0.22,
+    },
+    "light": {
+        "description": "Default light color correction",
+        "sat_gain": 1.22,
+        "val_gain": 1.04,
+        "glare_reduction": 0.30,
+        "glare_value_threshold": 238,
+        "glare_sat_threshold": 48,
+        "sharpen_strength": 0.25,
+    },
+    "medium": {
+        "description": "Medium color correction",
+        "sat_gain": 1.32,
+        "val_gain": 1.06,
+        "glare_reduction": 0.24,
+        "glare_value_threshold": 240,
+        "glare_sat_threshold": 52,
+        "sharpen_strength": 0.28,
+    },
+    "extreme": {
+        "description": "Extreme color correction",
+        "sat_gain": 1.45,
+        "val_gain": 1.10,
+        "glare_reduction": 0.14,
+        "glare_value_threshold": 244,
+        "glare_sat_threshold": 60,
+        "sharpen_strength": 0.32,
+    },
+    "glare_safe": {
+        "description": "Extra glare reduction with mild color boost",
+        "sat_gain": 1.12,
+        "val_gain": 1.02,
+        "glare_reduction": 0.45,
+        "glare_value_threshold": 232,
+        "glare_sat_threshold": 60,
+        "sharpen_strength": 0.24,
+    },
+}
+
 # digiCamControl HTTP server (enable in DCC: Tools > Settings > Webserver, port 5513)
 DCC_URL = os.environ.get("DCC_URL", "http://localhost:5513")
 
@@ -636,25 +685,27 @@ def _perspective_crop(img, corners, margin=20):
     return cv2.warpPerspective(img, M, (width, height))
 
 
-def _sharpen(img):
-    """Unsharp mask: brings out edge detail and text on the card label."""
+def _sharpen(img, strength=0.25):
+    """Unsharp mask with configurable strength."""
+    strength = max(0.0, min(1.0, float(strength)))
     blurred = cv2.GaussianBlur(img, (0, 0), 2)
-    return cv2.addWeighted(img, 1.25, blurred, -0.25, 0)
+    return cv2.addWeighted(img, 1.0 + strength, blurred, -strength, 0)
 
 
-def _light_color_boost(img):
-    """Conservative color pop with glare-safe highlight handling."""
+def _light_color_boost(img, sat_gain, val_gain, glare_value_threshold, glare_sat_threshold, glare_reduction):
+    """Profile-driven color pop with configurable glare handling."""
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
 
     sat = hsv[:, :, 1]
     val = hsv[:, :, 2]
 
     # Only reduce likely slab glare: very bright + low saturation.
-    glare_mask = (val >= GLARE_VALUE_THRESHOLD) & (sat <= GLARE_SAT_THRESHOLD)
-    val[glare_mask] *= (1.0 - GLARE_REDUCTION_STRENGTH)
+    if glare_reduction > 0:
+        glare_mask = (val >= glare_value_threshold) & (sat <= glare_sat_threshold)
+        val[glare_mask] *= (1.0 - glare_reduction)
 
-    hsv[:, :, 1] = np.clip(sat * LIGHT_COLOR_SAT_GAIN, 0, 255)
-    hsv[:, :, 2] = np.clip(val * LIGHT_COLOR_VAL_GAIN, 0, 255)
+    hsv[:, :, 1] = np.clip(sat * sat_gain, 0, 255)
+    hsv[:, :, 2] = np.clip(val * val_gain, 0, 255)
     return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
 
 
@@ -737,7 +788,12 @@ def _color_correct(img):
     return out
 
 
-def process_card_image(src_path: str, dst_path: str, rotate_only: bool = False):
+def process_card_image(
+    src_path: str,
+    dst_path: str,
+    rotate_only: bool = False,
+    profile_name: str = DEFAULT_CAPTURE_PROFILE,
+):
     """
     Full processing pipeline:
       1. Rotate 90° left (counterclockwise)
@@ -755,6 +811,10 @@ def process_card_image(src_path: str, dst_path: str, rotate_only: bool = False):
         log.info("Rotated 90° left")
 
         if not rotate_only:
+            profile = COLOR_PROFILES.get(profile_name)
+            if profile is None:
+                raise ValueError(f"Unknown profile '{profile_name}'")
+
             # 2. Primary crop: shrink edges inward until color diverges from background.
             img, cropped = _crop_by_border_contrast(img)
 
@@ -782,18 +842,19 @@ def process_card_image(src_path: str, dst_path: str, rotate_only: bool = False):
                     else:
                         log.warning("Card not detected for crop — leaving orientation as-is")
 
-            # 3. Color correction intentionally disabled for color-safe output.
-            if ENABLE_COLOR_CORRECTION:
-                img = _color_correct(img)
-                log.info("Applied color correction")
-
-            # 3a. Mild color boost for less washed-out results.
-            if ENABLE_LIGHT_COLOR_BOOST:
-                img = _light_color_boost(img)
-                log.info("Applied light color boost")
+            # 3. Profile-based color/glare correction.
+            img = _light_color_boost(
+                img,
+                sat_gain=profile["sat_gain"],
+                val_gain=profile["val_gain"],
+                glare_value_threshold=profile["glare_value_threshold"],
+                glare_sat_threshold=profile["glare_sat_threshold"],
+                glare_reduction=profile["glare_reduction"],
+            )
+            log.info(f"Applied profile: {profile_name}")
 
             # 4. Sharpen
-            img = _sharpen(img)
+            img = _sharpen(img, strength=profile["sharpen_strength"])
         else:
             log.info("rotate-only mode: skipping detection and sharpening")
 
@@ -816,7 +877,7 @@ class DigiCamControlCamera:
         log.info(f"Connected to digiCamControl at {DCC_URL}")
         log.info(f"Watching folder: {DCC_SAVE_DIR}")
 
-    def capture(self) -> str:
+    def capture(self, profile_name: str = DEFAULT_CAPTURE_PROFILE) -> str:
         # Baseline snapshot
         before = get_jpg_files(DCC_SAVE_DIR)
         log.info(f"Baseline: {len(before)} images")
@@ -846,7 +907,7 @@ class DigiCamControlCamera:
                 log.info(f"New image: {src}")
                 ts = time.strftime("%Y%m%d-%H%M%S")
                 dst = os.path.join(CAPTURE_DIR, f"IMG_{ts}.jpg")
-                process_card_image(src, dst, rotate_only=ROTATE_ONLY)
+                process_card_image(src, dst, rotate_only=ROTATE_ONLY, profile_name=profile_name)
                 return dst
             time.sleep(0.3)
 
@@ -890,11 +951,51 @@ def health():
     return {"status": "ok", "camera_connected": camera.connected, "rotate_only": ROTATE_ONLY}
 
 
+@app.get("/endpoints")
+def endpoints():
+    profile_endpoints = [f"/capture/{name}" for name in COLOR_PROFILES.keys()]
+    return {
+        "default_capture": "/capture",
+        "profile_capture": "/capture/{profile_name}",
+        "available_capture_profiles": list(COLOR_PROFILES.keys()),
+        "profile_endpoints": profile_endpoints,
+        "other": ["/health", "/camera/status", "/profiles", "/endpoints"],
+    }
+
+
+@app.get("/profiles")
+def profiles():
+    return {
+        "default_profile": DEFAULT_CAPTURE_PROFILE,
+        "profiles": COLOR_PROFILES,
+    }
+
+
 @app.post("/capture")
 def capture():
     try:
-        path = camera.capture()
+        path = camera.capture(profile_name=DEFAULT_CAPTURE_PROFILE)
         return FileResponse(path, media_type="image/jpeg", filename=os.path.basename(path))
+    except Exception as e:
+        log.error(traceback.format_exc())
+        raise HTTPException(500, str(e))
+
+
+@app.post("/capture/{profile_name}")
+def capture_with_profile(profile_name: str):
+    try:
+        if profile_name not in COLOR_PROFILES:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": f"Unknown profile '{profile_name}'",
+                    "available_profiles": list(COLOR_PROFILES.keys()),
+                },
+            )
+        path = camera.capture(profile_name=profile_name)
+        return FileResponse(path, media_type="image/jpeg", filename=os.path.basename(path))
+    except HTTPException:
+        raise
     except Exception as e:
         log.error(traceback.format_exc())
         raise HTTPException(500, str(e))
