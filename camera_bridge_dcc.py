@@ -20,7 +20,7 @@ DCC_URL = os.environ.get("DCC_URL", "http://localhost:5513")
 # Folder where digiCamControl saves photos (DCC: Session > Session folder)
 # Override with DCC_SAVE_DIR env var to match your DCC session folder
 DCC_SAVE_DIR = os.environ.get("DCC_SAVE_DIR",
-    os.path.join(os.path.expanduser("~"), "Pictures", "digiCamControl"))
+    r"C:\Users\OmniV\OneDrive\Pictures\digiCamControl\Session1")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("camerabridge")
