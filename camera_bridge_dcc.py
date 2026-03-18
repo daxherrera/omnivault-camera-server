@@ -30,6 +30,8 @@ EDGE_HIT_RATIO = float(os.environ.get("EDGE_HIT_RATIO", "0.12"))
 EDGE_SCAN_BAND = int(os.environ.get("EDGE_SCAN_BAND", "4"))
 EDGE_SCAN_MAX_RATIO = float(os.environ.get("EDGE_SCAN_MAX_RATIO", "0.45"))
 EDGE_SCAN_MARGIN_PX = int(os.environ.get("EDGE_SCAN_MARGIN_PX", "10"))
+WHITE_DESKEW_MIN_DEG = float(os.environ.get("WHITE_DESKEW_MIN_DEG", "0.3"))
+WHITE_DESKEW_MAX_DEG = float(os.environ.get("WHITE_DESKEW_MAX_DEG", "15.0"))
 
 # digiCamControl HTTP server (enable in DCC: Tools > Settings > Webserver, port 5513)
 DCC_URL = os.environ.get("DCC_URL", "http://localhost:5513")
@@ -276,6 +278,69 @@ def _crop_bright_slab_foreground(img, margin=CROP_MARGIN_PX):
     return img[y0:y1, x0:x1], True
 
 
+def _estimate_white_slab_angle(img):
+    """Estimate slab tilt angle from bright/white slab region using minAreaRect."""
+    h, w = img.shape[:2]
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+    light = cv2.GaussianBlur(lab[:, :, 0], (5, 5), 0)
+
+    bright_cutoff = int(np.percentile(light, BRIGHT_SLAB_PERCENTILE))
+    thresh_val = max(30, min(250, bright_cutoff - BRIGHT_SLAB_DELTA))
+    _, mask = cv2.threshold(light, thresh_val, 255, cv2.THRESH_BINARY)
+
+    kernel = np.ones((7, 7), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+
+    min_area = w * h * MIN_CROP_AREA_RATIO
+    best = None
+    best_score = -1.0
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < min_area:
+            continue
+        x, y, cw, ch = cv2.boundingRect(cnt)
+        rect_area = float(cw * ch)
+        fill_ratio = area / rect_area if rect_area > 0 else 0
+        score = area * (0.5 + min(fill_ratio, 1.0))
+        if score > best_score:
+            best_score = score
+            best = cnt
+
+    if best is None:
+        return None
+
+    (_, _), (rw, rh), angle = cv2.minAreaRect(best)
+    if rw < rh:
+        angle += 90.0
+    if angle > 45.0:
+        angle -= 90.0
+    if angle < -45.0:
+        angle += 90.0
+    return float(angle)
+
+
+def _deskew_from_white_slab(img):
+    """Deskew image by rotating opposite of white slab angle estimate."""
+    angle = _estimate_white_slab_angle(img)
+    if angle is None:
+        return img, False
+
+    abs_angle = abs(angle)
+    if abs_angle < WHITE_DESKEW_MIN_DEG or abs_angle > WHITE_DESKEW_MAX_DEG:
+        return img, False
+
+    h, w = img.shape[:2]
+    M = cv2.getRotationMatrix2D((w / 2, h / 2), -angle, 1.0)
+    deskewed = cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    log.info(f"White-slab deskew: corrected {angle:.2f}°")
+    return deskewed, True
+
+
 def _crop_by_border_contrast(img, margin=EDGE_SCAN_MARGIN_PX):
     """
     Shrink from all 4 edges until strip color is significantly different from
@@ -468,18 +533,21 @@ def process_card_image(src_path: str, dst_path: str, rotate_only: bool = False):
         log.info("Rotated 90° left")
 
         if not rotate_only:
-            # 2. Primary crop: shrink edges inward until color diverges from background.
+            # 2. Straighten first using white slab orientation.
+            img, _ = _deskew_from_white_slab(img)
+
+            # 3. Primary crop: shrink edges inward until color diverges from background.
             img, cropped = _crop_by_border_contrast(img)
 
-            # 2a. Secondary crop: white slab foreground (background agnostic).
+            # 3a. Secondary crop: white slab foreground (background agnostic).
             if not cropped:
                 img, cropped = _crop_bright_slab_foreground(img)
 
-            # 2b. Tertiary crop for darker backgrounds.
+            # 3b. Tertiary crop for darker backgrounds.
             if not cropped:
                 img, cropped = _crop_non_black_foreground(img)
 
-            # 2c. Optional perspective cleanup on already-cropped image.
+            # 3c. Optional perspective cleanup on already-cropped image.
             if not cropped:
                 corners = _detect_card_contour(img)
                 if corners is not None:
