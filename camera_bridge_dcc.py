@@ -48,7 +48,10 @@ COLOR_VIBRANCE = 0.08
 HIGHLIGHT_ROLL_OFF = 6.0
 ENABLE_LIGHT_COLOR_BOOST = True
 LIGHT_COLOR_SAT_GAIN = 1.10
-LIGHT_COLOR_VAL_GAIN = 1.03
+LIGHT_COLOR_VAL_GAIN = 1.00
+GLARE_VALUE_THRESHOLD = 238
+GLARE_SAT_THRESHOLD = 48
+GLARE_REDUCTION_STRENGTH = 0.30
 
 # digiCamControl HTTP server (enable in DCC: Tools > Settings > Webserver, port 5513)
 DCC_URL = os.environ.get("DCC_URL", "http://localhost:5513")
@@ -640,10 +643,18 @@ def _sharpen(img):
 
 
 def _light_color_boost(img):
-    """Conservative color pop without aggressive local contrast edits."""
+    """Conservative color pop with glare-safe highlight handling."""
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
-    hsv[:, :, 1] = np.clip(hsv[:, :, 1] * LIGHT_COLOR_SAT_GAIN, 0, 255)
-    hsv[:, :, 2] = np.clip(hsv[:, :, 2] * LIGHT_COLOR_VAL_GAIN, 0, 255)
+
+    sat = hsv[:, :, 1]
+    val = hsv[:, :, 2]
+
+    # Only reduce likely slab glare: very bright + low saturation.
+    glare_mask = (val >= GLARE_VALUE_THRESHOLD) & (sat <= GLARE_SAT_THRESHOLD)
+    val[glare_mask] *= (1.0 - GLARE_REDUCTION_STRENGTH)
+
+    hsv[:, :, 1] = np.clip(sat * LIGHT_COLOR_SAT_GAIN, 0, 255)
+    hsv[:, :, 2] = np.clip(val * LIGHT_COLOR_VAL_GAIN, 0, 255)
     return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
 
 
