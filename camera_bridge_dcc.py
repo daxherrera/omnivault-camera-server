@@ -99,6 +99,38 @@ def _detect_card_contour(img):
     return best_corners
 
 
+def _detect_card_on_black_background(img):
+    """
+    Black-foam-core specific detector.
+    Segments non-black foreground and uses minAreaRect to get a robust 4-corner box.
+    Returns a (4,2) float32 array of points or None.
+    """
+    h, w = img.shape[:2]
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+
+    # Otsu picks a split between dark background and brighter slab/card foreground.
+    _, mask = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    kernel = np.ones((7, 7), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+
+    largest = max(contours, key=cv2.contourArea)
+    area = cv2.contourArea(largest)
+    if area < (w * h * 0.08):
+        return None
+
+    rect = cv2.minAreaRect(largest)
+    box = cv2.boxPoints(rect)
+    log.info(f"Black-bg detector box found, area={area:.0f}")
+    return box.astype("float32")
+
+
 def _expand_corners(corners, margin):
     """Push each corner outward from the center by `margin` pixels."""
     center = corners.mean(axis=0)
@@ -193,8 +225,13 @@ def process_card_image(src_path: str, dst_path: str, rotate_only: bool = False):
                 img = _perspective_crop(img, corners)
                 log.info("Card detected and cropped")
             else:
-                log.warning("Card quad not detected — attempting deskew fallback")
-                img = _deskew_fallback(img)
+                bg_corners = _detect_card_on_black_background(img)
+                if bg_corners is not None:
+                    img = _perspective_crop(img, bg_corners)
+                    log.info("Card cropped using black-background detector")
+                else:
+                    log.warning("Card not detected for crop — attempting deskew fallback")
+                    img = _deskew_fallback(img)
 
             # 3. Sharpen
             img = _sharpen(img)
