@@ -23,6 +23,8 @@ MIN_CROP_AREA_RATIO = float(os.environ.get("MIN_CROP_AREA_RATIO", "0.08"))
 BLACK_BG_DELTA = int(os.environ.get("BLACK_BG_DELTA", "22"))
 BRIGHT_SLAB_PERCENTILE = int(os.environ.get("BRIGHT_SLAB_PERCENTILE", "88"))
 BRIGHT_SLAB_DELTA = int(os.environ.get("BRIGHT_SLAB_DELTA", "8"))
+BRIGHT_SLAB_PAD_X_RATIO = float(os.environ.get("BRIGHT_SLAB_PAD_X_RATIO", "0.28"))
+BRIGHT_SLAB_PAD_Y_RATIO = float(os.environ.get("BRIGHT_SLAB_PAD_Y_RATIO", "0.18"))
 
 # digiCamControl HTTP server (enable in DCC: Tools > Settings > Webserver, port 5513)
 DCC_URL = os.environ.get("DCC_URL", "http://localhost:5513")
@@ -249,16 +251,22 @@ def _crop_bright_slab_foreground(img, margin=CROP_MARGIN_PX):
         return img, False
 
     x, y, cw, ch, area = best
-    x0 = max(0, x - margin)
-    y0 = max(0, y - margin)
-    x1 = min(w, x + cw + margin)
-    y1 = min(h, y + ch + margin)
+
+    # White detection can lock onto the card face; pad aggressively to retain slab edges/label.
+    pad_x = max(margin, int(cw * BRIGHT_SLAB_PAD_X_RATIO))
+    pad_y = max(margin, int(ch * BRIGHT_SLAB_PAD_Y_RATIO))
+
+    x0 = max(0, x - pad_x)
+    y0 = max(0, y - pad_y)
+    x1 = min(w, x + cw + pad_x)
+    y1 = min(h, y + ch + pad_y)
 
     if (x1 - x0) < 50 or (y1 - y0) < 50:
         return img, False
 
     log.info(
-        f"Bright-slab bbox crop: x={x0}, y={y0}, w={x1 - x0}, h={y1 - y0}, area={area:.0f}, thresh={thresh_val}"
+        f"Bright-slab bbox crop: x={x0}, y={y0}, w={x1 - x0}, h={y1 - y0}, "
+        f"area={area:.0f}, thresh={thresh_val}, pad_x={pad_x}, pad_y={pad_y}"
     )
     return img[y0:y1, x0:x1], True
 
