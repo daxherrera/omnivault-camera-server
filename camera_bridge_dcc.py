@@ -37,8 +37,15 @@ LINE_DESKEW_MAX_DEG = float(os.environ.get("LINE_DESKEW_MAX_DEG", "12.0"))
 LINE_DESKEW_HOUGH_THRESHOLD = int(os.environ.get("LINE_DESKEW_HOUGH_THRESHOLD", "70"))
 ENABLE_COLOR_CORRECTION = os.environ.get("ENABLE_COLOR_CORRECTION", "1") != "0"
 SATURATION_GAIN = float(os.environ.get("SATURATION_GAIN", "1.14"))
-CLAHE_CLIP_LIMIT = float(os.environ.get("CLAHE_CLIP_LIMIT", "2.2"))
+CLAHE_CLIP_LIMIT = float(os.environ.get("CLAHE_CLIP_LIMIT", "1.8"))
 GAMMA = float(os.environ.get("GAMMA", "1.0"))
+ENABLE_DEGLARE = os.environ.get("ENABLE_DEGLARE", "1") != "0"
+DEGLARE_VALUE_THRESH = int(os.environ.get("DEGLARE_VALUE_THRESH", "235"))
+DEGLARE_SAT_THRESH = int(os.environ.get("DEGLARE_SAT_THRESH", "55"))
+DEGLARE_MAX_MASK_RATIO = float(os.environ.get("DEGLARE_MAX_MASK_RATIO", "0.14"))
+DEGLARE_INPAINT_RADIUS = float(os.environ.get("DEGLARE_INPAINT_RADIUS", "2.0"))
+COLOR_VIBRANCE = float(os.environ.get("COLOR_VIBRANCE", "0.25"))
+HIGHLIGHT_ROLL_OFF = float(os.environ.get("HIGHLIGHT_ROLL_OFF", "16"))
 
 # digiCamControl HTTP server (enable in DCC: Tools > Settings > Webserver, port 5513)
 DCC_URL = os.environ.get("DCC_URL", "http://localhost:5513")
@@ -629,9 +636,38 @@ def _sharpen(img):
     return cv2.addWeighted(img, 1.7, blurred, -0.7, 0)
 
 
+def _suppress_specular_scratches(img):
+    """Reduce bright low-saturation streaks from slab plastic reflections."""
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    h, s, v = cv2.split(hsv)
+
+    mask = np.zeros_like(v, dtype=np.uint8)
+    mask[(v >= DEGLARE_VALUE_THRESH) & (s <= DEGLARE_SAT_THRESH)] = 255
+
+    kernel = np.ones((3, 3), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+    mask = cv2.dilate(mask, kernel, iterations=1)
+
+    ratio = float(np.mean(mask > 0))
+    if ratio <= 0.0:
+        return img
+    if ratio > DEGLARE_MAX_MASK_RATIO:
+        # Skip to avoid flattening the whole image when glare mask is too broad.
+        log.info(f"Deglare skipped, mask too large: {ratio:.3f}")
+        return img
+
+    fixed = cv2.inpaint(img, mask, DEGLARE_INPAINT_RADIUS, cv2.INPAINT_TELEA)
+    out = cv2.addWeighted(fixed, 0.72, img, 0.28, 0)
+    log.info(f"Deglare applied, mask ratio={ratio:.3f}")
+    return out
+
+
 def _color_correct(img):
     """Post-crop color correction tuned for slab/card photos."""
     out = img.astype(np.float32)
+
+    if ENABLE_DEGLARE:
+        out = _suppress_specular_scratches(out.astype(np.uint8)).astype(np.float32)
 
     # Gray-world white balance to neutralize color cast from lightbox/room light.
     b_mean = float(np.mean(out[:, :, 0]))
@@ -648,14 +684,25 @@ def _color_correct(img):
     # Local contrast on L channel for cleaner whites and more readable text.
     lab = cv2.cvtColor(out, cv2.COLOR_BGR2LAB)
     l, a, b = cv2.split(lab)
+    l_f = l.astype(np.float32)
+
+    # Roll off highlight intensity so plastic glare doesn't dominate.
+    highlight_mask = l_f > 200.0
+    l_f[highlight_mask] -= ((l_f[highlight_mask] - 200.0) / 55.0) * HIGHLIGHT_ROLL_OFF
+    l = np.clip(l_f, 0, 255).astype(np.uint8)
+
     clahe = cv2.createCLAHE(clipLimit=CLAHE_CLIP_LIMIT, tileGridSize=(8, 8))
     l = clahe.apply(l)
     lab = cv2.merge((l, a, b))
     out = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
 
-    # Saturation boost for card artwork colors.
+    # Vibrance-style boost: increase low-sat colors more than already saturated areas.
     hsv = cv2.cvtColor(out, cv2.COLOR_BGR2HSV).astype(np.float32)
-    hsv[:, :, 1] = np.clip(hsv[:, :, 1] * SATURATION_GAIN, 0, 255)
+    sat = hsv[:, :, 1]
+    vib_boost = 1.0 + COLOR_VIBRANCE * (1.0 - (sat / 255.0))
+    sat = np.clip(sat * vib_boost, 0, 255)
+    sat = np.clip(sat * SATURATION_GAIN, 0, 255)
+    hsv[:, :, 1] = sat
     out = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
 
     # Optional gamma for quick brightness tuning.
