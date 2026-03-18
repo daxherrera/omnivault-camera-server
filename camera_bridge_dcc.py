@@ -36,16 +36,16 @@ LINE_DESKEW_MIN_DEG = 0.25
 LINE_DESKEW_MAX_DEG = 12.0
 LINE_DESKEW_HOUGH_THRESHOLD = 70
 ENABLE_COLOR_CORRECTION = True
-SATURATION_GAIN = 1.14
-CLAHE_CLIP_LIMIT = 1.8
+SATURATION_GAIN = 1.05
+CLAHE_CLIP_LIMIT = 1.25
 GAMMA = 1.0
-ENABLE_DEGLARE = True
-DEGLARE_VALUE_THRESH = 235
-DEGLARE_SAT_THRESH = 55
+ENABLE_DEGLARE = False
+DEGLARE_VALUE_THRESH = 242
+DEGLARE_SAT_THRESH = 35
 DEGLARE_MAX_MASK_RATIO = 0.14
-DEGLARE_INPAINT_RADIUS = 2.0
-COLOR_VIBRANCE = 0.25
-HIGHLIGHT_ROLL_OFF = 16.0
+DEGLARE_INPAINT_RADIUS = 1.2
+COLOR_VIBRANCE = 0.08
+HIGHLIGHT_ROLL_OFF = 6.0
 
 # digiCamControl HTTP server (enable in DCC: Tools > Settings > Webserver, port 5513)
 DCC_URL = os.environ.get("DCC_URL", "http://localhost:5513")
@@ -681,12 +681,12 @@ def _color_correct(img):
 
     out = np.clip(out, 0, 255).astype(np.uint8)
 
-    # Local contrast on L channel for cleaner whites and more readable text.
+    # Mild local contrast on L channel, kept conservative to avoid halo artifacts.
     lab = cv2.cvtColor(out, cv2.COLOR_BGR2LAB)
     l, a, b = cv2.split(lab)
     l_f = l.astype(np.float32)
 
-    # Roll off highlight intensity so plastic glare doesn't dominate.
+    # Gentle highlight roll-off to reduce glare clipping without whitening nearby color.
     highlight_mask = l_f > 200.0
     l_f[highlight_mask] -= ((l_f[highlight_mask] - 200.0) / 55.0) * HIGHLIGHT_ROLL_OFF
     l = np.clip(l_f, 0, 255).astype(np.uint8)
@@ -696,7 +696,7 @@ def _color_correct(img):
     lab = cv2.merge((l, a, b))
     out = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
 
-    # Vibrance-style boost: increase low-sat colors more than already saturated areas.
+    # Very mild vibrance/saturation boost for safer color across different card sets.
     hsv = cv2.cvtColor(out, cv2.COLOR_BGR2HSV).astype(np.float32)
     sat = hsv[:, :, 1]
     vib_boost = 1.0 + COLOR_VIBRANCE * (1.0 - (sat / 255.0))
