@@ -794,10 +794,16 @@ class DigiCamControlCamera:
         before = get_jpg_files(DCC_SAVE_DIR)
         log.info(f"Baseline: {len(before)} images")
 
-        # Trigger capture - no AF (manual focus lens)
-        resp = requests.get(f"{DCC_URL}/?CMD=Capture", timeout=15)
-        resp.raise_for_status()
-        log.info("Shutter triggered")
+        # Trigger capture without autofocus first. Fallback keeps compatibility.
+        try:
+            resp = requests.get(f"{DCC_URL}/?CMD=CaptureNoAf", timeout=15)
+            resp.raise_for_status()
+            log.info("Shutter triggered (CaptureNoAf)")
+        except Exception:
+            log.warning("CaptureNoAf failed; falling back to Capture")
+            resp = requests.get(f"{DCC_URL}/?CMD=Capture", timeout=15)
+            resp.raise_for_status()
+            log.info("Shutter triggered (Capture)")
 
         # Poll for new file
         deadline = time.time() + 30
