@@ -32,6 +32,9 @@ EDGE_SCAN_MAX_RATIO = float(os.environ.get("EDGE_SCAN_MAX_RATIO", "0.45"))
 EDGE_SCAN_MARGIN_PX = int(os.environ.get("EDGE_SCAN_MARGIN_PX", "10"))
 WHITE_DESKEW_MIN_DEG = float(os.environ.get("WHITE_DESKEW_MIN_DEG", "0.3"))
 WHITE_DESKEW_MAX_DEG = float(os.environ.get("WHITE_DESKEW_MAX_DEG", "15.0"))
+LINE_DESKEW_MIN_DEG = float(os.environ.get("LINE_DESKEW_MIN_DEG", "0.25"))
+LINE_DESKEW_MAX_DEG = float(os.environ.get("LINE_DESKEW_MAX_DEG", "12.0"))
+LINE_DESKEW_HOUGH_THRESHOLD = int(os.environ.get("LINE_DESKEW_HOUGH_THRESHOLD", "70"))
 
 # digiCamControl HTTP server (enable in DCC: Tools > Settings > Webserver, port 5513)
 DCC_URL = os.environ.get("DCC_URL", "http://localhost:5513")
@@ -341,6 +344,77 @@ def _deskew_from_white_slab(img):
     return deskewed, True
 
 
+def _estimate_skew_from_lines(img):
+    """
+    Estimate skew angle from dominant long edges.
+    Returns angle in degrees (positive means CCW), or None if no stable estimate.
+    """
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(gray, 50, 150)
+
+    h, w = img.shape[:2]
+    min_line_len = max(40, int(min(h, w) * 0.35))
+    lines = cv2.HoughLinesP(
+        edges,
+        rho=1,
+        theta=np.pi / 180,
+        threshold=LINE_DESKEW_HOUGH_THRESHOLD,
+        minLineLength=min_line_len,
+        maxLineGap=20,
+    )
+    if lines is None:
+        return None
+
+    weighted_sum = 0.0
+    total_weight = 0.0
+
+    for line in lines[:, 0, :]:
+        x1, y1, x2, y2 = line
+        dx = x2 - x1
+        dy = y2 - y1
+        length = float(np.hypot(dx, dy))
+        if length < min_line_len:
+            continue
+
+        angle = float(np.degrees(np.arctan2(dy, dx)))
+
+        # Normalize to nearest axis deviation in [-45, 45]
+        if angle > 45.0:
+            angle -= 90.0
+        elif angle < -45.0:
+            angle += 90.0
+
+        # Keep mostly horizontal/vertical edges only.
+        if abs(angle) > 20.0:
+            continue
+
+        weighted_sum += angle * length
+        total_weight += length
+
+    if total_weight == 0:
+        return None
+
+    return weighted_sum / total_weight
+
+
+def _deskew_from_lines(img):
+    """Deskew using line-based angle estimate on the cropped slab image."""
+    angle = _estimate_skew_from_lines(img)
+    if angle is None:
+        return img, False
+
+    abs_angle = abs(angle)
+    if abs_angle < LINE_DESKEW_MIN_DEG or abs_angle > LINE_DESKEW_MAX_DEG:
+        return img, False
+
+    h, w = img.shape[:2]
+    M = cv2.getRotationMatrix2D((w / 2, h / 2), -angle, 1.0)
+    deskewed = cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    log.info(f"Line deskew: corrected {angle:.2f}°")
+    return deskewed, True
+
+
 def _crop_by_border_contrast(img, margin=EDGE_SCAN_MARGIN_PX):
     """
     Shrink from all 4 edges until strip color is significantly different from
@@ -552,15 +626,21 @@ def process_card_image(src_path: str, dst_path: str, rotate_only: bool = False):
                 corners = _detect_card_contour(img)
                 if corners is not None:
                     img = _perspective_crop(img, corners, margin=CROP_MARGIN_PX)
+                    cropped = True
                     log.info("Card detected and perspective-cropped")
                 else:
                     bg_corners = _detect_card_on_black_background(img)
                     if bg_corners is not None:
                         img = _perspective_crop(img, bg_corners, margin=CROP_MARGIN_PX)
+                        cropped = True
                         log.info("Card perspective-cropped using black-background detector")
                     else:
                         log.warning("Card not detected for crop — attempting deskew fallback")
                         img = _deskew_fallback(img)
+
+            # 3d. Post-crop straighten based on slab edge lines.
+            if cropped:
+                img, _ = _deskew_from_lines(img)
 
             # 3. Sharpen
             img = _sharpen(img)
