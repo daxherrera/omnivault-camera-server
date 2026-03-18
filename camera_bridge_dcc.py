@@ -46,6 +46,9 @@ DEGLARE_MAX_MASK_RATIO = 0.14
 DEGLARE_INPAINT_RADIUS = 1.2
 COLOR_VIBRANCE = 0.08
 HIGHLIGHT_ROLL_OFF = 6.0
+ENABLE_LIGHT_COLOR_BOOST = True
+LIGHT_COLOR_SAT_GAIN = 1.10
+LIGHT_COLOR_VAL_GAIN = 1.03
 
 # digiCamControl HTTP server (enable in DCC: Tools > Settings > Webserver, port 5513)
 DCC_URL = os.environ.get("DCC_URL", "http://localhost:5513")
@@ -636,6 +639,14 @@ def _sharpen(img):
     return cv2.addWeighted(img, 1.25, blurred, -0.25, 0)
 
 
+def _light_color_boost(img):
+    """Conservative color pop without aggressive local contrast edits."""
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
+    hsv[:, :, 1] = np.clip(hsv[:, :, 1] * LIGHT_COLOR_SAT_GAIN, 0, 255)
+    hsv[:, :, 2] = np.clip(hsv[:, :, 2] * LIGHT_COLOR_VAL_GAIN, 0, 255)
+    return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+
 def _suppress_specular_scratches(img):
     """Reduce bright low-saturation streaks from slab plastic reflections."""
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
@@ -764,6 +775,11 @@ def process_card_image(src_path: str, dst_path: str, rotate_only: bool = False):
             if ENABLE_COLOR_CORRECTION:
                 img = _color_correct(img)
                 log.info("Applied color correction")
+
+            # 3a. Mild color boost for less washed-out results.
+            if ENABLE_LIGHT_COLOR_BOOST:
+                img = _light_color_boost(img)
+                log.info("Applied light color boost")
 
             # 4. Sharpen
             img = _sharpen(img)
