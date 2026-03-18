@@ -25,6 +25,11 @@ BRIGHT_SLAB_PERCENTILE = int(os.environ.get("BRIGHT_SLAB_PERCENTILE", "88"))
 BRIGHT_SLAB_DELTA = int(os.environ.get("BRIGHT_SLAB_DELTA", "8"))
 BRIGHT_SLAB_PAD_X_RATIO = float(os.environ.get("BRIGHT_SLAB_PAD_X_RATIO", "0.28"))
 BRIGHT_SLAB_PAD_Y_RATIO = float(os.environ.get("BRIGHT_SLAB_PAD_Y_RATIO", "0.18"))
+EDGE_DIFF_THRESHOLD = float(os.environ.get("EDGE_DIFF_THRESHOLD", "24"))
+EDGE_HIT_RATIO = float(os.environ.get("EDGE_HIT_RATIO", "0.12"))
+EDGE_SCAN_BAND = int(os.environ.get("EDGE_SCAN_BAND", "4"))
+EDGE_SCAN_MAX_RATIO = float(os.environ.get("EDGE_SCAN_MAX_RATIO", "0.45"))
+EDGE_SCAN_MARGIN_PX = int(os.environ.get("EDGE_SCAN_MARGIN_PX", "10"))
 
 # digiCamControl HTTP server (enable in DCC: Tools > Settings > Webserver, port 5513)
 DCC_URL = os.environ.get("DCC_URL", "http://localhost:5513")
@@ -271,6 +276,110 @@ def _crop_bright_slab_foreground(img, margin=CROP_MARGIN_PX):
     return img[y0:y1, x0:x1], True
 
 
+def _crop_by_border_contrast(img, margin=EDGE_SCAN_MARGIN_PX):
+    """
+    Shrink from all 4 edges until strip color is significantly different from
+    background color. This targets a bright slab on a more uniform background.
+    Returns (cropped_img, True) on success, else (original_img, False).
+    """
+    h, w = img.shape[:2]
+    if h < 80 or w < 80:
+        return img, False
+
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB).astype(np.float32)
+
+    # Estimate background color from outer border frame.
+    bh = max(6, int(h * 0.04))
+    bw = max(6, int(w * 0.04))
+    border_pixels = np.concatenate([
+        lab[:bh, :, :].reshape(-1, 3),
+        lab[h - bh:, :, :].reshape(-1, 3),
+        lab[:, :bw, :].reshape(-1, 3),
+        lab[:, w - bw:, :].reshape(-1, 3),
+    ], axis=0)
+    bg = np.median(border_pixels, axis=0)
+
+    # Color-distance map from background in LAB space.
+    diff = np.linalg.norm(lab - bg, axis=2)
+    band = max(1, EDGE_SCAN_BAND)
+
+    x0_scan = int(w * 0.10)
+    x1_scan = int(w * 0.90)
+    y0_scan = int(h * 0.10)
+    y1_scan = int(h * 0.90)
+
+    max_scan_y = max(1, int(h * EDGE_SCAN_MAX_RATIO))
+    max_scan_x = max(1, int(w * EDGE_SCAN_MAX_RATIO))
+
+    def scan_top():
+        hits = 0
+        for y in range(0, max_scan_y):
+            strip = diff[y:min(h, y + band), x0_scan:x1_scan]
+            ratio = float(np.mean(strip > EDGE_DIFF_THRESHOLD))
+            hits = hits + 1 if ratio >= EDGE_HIT_RATIO else 0
+            if hits >= 2:
+                return max(0, y - 1)
+        return None
+
+    def scan_bottom():
+        hits = 0
+        for i in range(0, max_scan_y):
+            y = h - 1 - i
+            strip = diff[max(0, y - band + 1):y + 1, x0_scan:x1_scan]
+            ratio = float(np.mean(strip > EDGE_DIFF_THRESHOLD))
+            hits = hits + 1 if ratio >= EDGE_HIT_RATIO else 0
+            if hits >= 2:
+                return min(h - 1, y + 1)
+        return None
+
+    def scan_left():
+        hits = 0
+        for x in range(0, max_scan_x):
+            strip = diff[y0_scan:y1_scan, x:min(w, x + band)]
+            ratio = float(np.mean(strip > EDGE_DIFF_THRESHOLD))
+            hits = hits + 1 if ratio >= EDGE_HIT_RATIO else 0
+            if hits >= 2:
+                return max(0, x - 1)
+        return None
+
+    def scan_right():
+        hits = 0
+        for i in range(0, max_scan_x):
+            x = w - 1 - i
+            strip = diff[y0_scan:y1_scan, max(0, x - band + 1):x + 1]
+            ratio = float(np.mean(strip > EDGE_DIFF_THRESHOLD))
+            hits = hits + 1 if ratio >= EDGE_HIT_RATIO else 0
+            if hits >= 2:
+                return min(w - 1, x + 1)
+        return None
+
+    top = scan_top()
+    bottom = scan_bottom()
+    left = scan_left()
+    right = scan_right()
+
+    if None in (top, bottom, left, right):
+        return img, False
+
+    left = max(0, left - margin)
+    top = max(0, top - margin)
+    right = min(w - 1, right + margin)
+    bottom = min(h - 1, bottom + margin)
+
+    cw = right - left + 1
+    ch = bottom - top + 1
+    if cw < 80 or ch < 80:
+        return img, False
+    if (cw * ch) < (w * h * MIN_CROP_AREA_RATIO):
+        return img, False
+
+    log.info(
+        f"Edge-scan crop: x={left}, y={top}, w={cw}, h={ch}, "
+        f"thr={EDGE_DIFF_THRESHOLD}, hit_ratio={EDGE_HIT_RATIO}"
+    )
+    return img[top:bottom + 1, left:right + 1], True
+
+
 def _expand_corners(corners, margin):
     """Push each corner outward from the center by `margin` pixels."""
     center = corners.mean(axis=0)
@@ -359,14 +468,18 @@ def process_card_image(src_path: str, dst_path: str, rotate_only: bool = False):
         log.info("Rotated 90° left")
 
         if not rotate_only:
-            # 2. Primary crop: white slab foreground (background agnostic).
-            img, cropped = _crop_bright_slab_foreground(img)
+            # 2. Primary crop: shrink edges inward until color diverges from background.
+            img, cropped = _crop_by_border_contrast(img)
 
-            # 2a. Secondary crop for darker backgrounds.
+            # 2a. Secondary crop: white slab foreground (background agnostic).
+            if not cropped:
+                img, cropped = _crop_bright_slab_foreground(img)
+
+            # 2b. Tertiary crop for darker backgrounds.
             if not cropped:
                 img, cropped = _crop_non_black_foreground(img)
 
-            # 2b. Optional perspective cleanup on already-cropped image.
+            # 2c. Optional perspective cleanup on already-cropped image.
             if not cropped:
                 corners = _detect_card_contour(img)
                 if corners is not None:
