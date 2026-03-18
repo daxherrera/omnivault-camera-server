@@ -17,35 +17,35 @@ import uvicorn
 CAPTURE_DIR = os.path.join(os.getcwd(), "captures")
 os.makedirs(CAPTURE_DIR, exist_ok=True)
 
-# Black background crop tuning
-CROP_MARGIN_PX = int(os.environ.get("CROP_MARGIN_PX", "20"))
-MIN_CROP_AREA_RATIO = float(os.environ.get("MIN_CROP_AREA_RATIO", "0.08"))
-BLACK_BG_DELTA = int(os.environ.get("BLACK_BG_DELTA", "22"))
-BRIGHT_SLAB_PERCENTILE = int(os.environ.get("BRIGHT_SLAB_PERCENTILE", "88"))
-BRIGHT_SLAB_DELTA = int(os.environ.get("BRIGHT_SLAB_DELTA", "8"))
-BRIGHT_SLAB_PAD_X_RATIO = float(os.environ.get("BRIGHT_SLAB_PAD_X_RATIO", "0.28"))
-BRIGHT_SLAB_PAD_Y_RATIO = float(os.environ.get("BRIGHT_SLAB_PAD_Y_RATIO", "0.18"))
-EDGE_DIFF_THRESHOLD = float(os.environ.get("EDGE_DIFF_THRESHOLD", "24"))
-EDGE_HIT_RATIO = float(os.environ.get("EDGE_HIT_RATIO", "0.12"))
-EDGE_SCAN_BAND = int(os.environ.get("EDGE_SCAN_BAND", "4"))
-EDGE_SCAN_MAX_RATIO = float(os.environ.get("EDGE_SCAN_MAX_RATIO", "0.45"))
-EDGE_SCAN_MARGIN_PX = int(os.environ.get("EDGE_SCAN_MARGIN_PX", "10"))
-WHITE_DESKEW_MIN_DEG = float(os.environ.get("WHITE_DESKEW_MIN_DEG", "0.3"))
-WHITE_DESKEW_MAX_DEG = float(os.environ.get("WHITE_DESKEW_MAX_DEG", "15.0"))
-LINE_DESKEW_MIN_DEG = float(os.environ.get("LINE_DESKEW_MIN_DEG", "0.25"))
-LINE_DESKEW_MAX_DEG = float(os.environ.get("LINE_DESKEW_MAX_DEG", "12.0"))
-LINE_DESKEW_HOUGH_THRESHOLD = int(os.environ.get("LINE_DESKEW_HOUGH_THRESHOLD", "70"))
-ENABLE_COLOR_CORRECTION = os.environ.get("ENABLE_COLOR_CORRECTION", "1") != "0"
-SATURATION_GAIN = float(os.environ.get("SATURATION_GAIN", "1.14"))
-CLAHE_CLIP_LIMIT = float(os.environ.get("CLAHE_CLIP_LIMIT", "1.8"))
-GAMMA = float(os.environ.get("GAMMA", "1.0"))
-ENABLE_DEGLARE = os.environ.get("ENABLE_DEGLARE", "1") != "0"
-DEGLARE_VALUE_THRESH = int(os.environ.get("DEGLARE_VALUE_THRESH", "235"))
-DEGLARE_SAT_THRESH = int(os.environ.get("DEGLARE_SAT_THRESH", "55"))
-DEGLARE_MAX_MASK_RATIO = float(os.environ.get("DEGLARE_MAX_MASK_RATIO", "0.14"))
-DEGLARE_INPAINT_RADIUS = float(os.environ.get("DEGLARE_INPAINT_RADIUS", "2.0"))
-COLOR_VIBRANCE = float(os.environ.get("COLOR_VIBRANCE", "0.25"))
-HIGHLIGHT_ROLL_OFF = float(os.environ.get("HIGHLIGHT_ROLL_OFF", "16"))
+# Image processing tuning (hardcoded so no env vars are needed)
+CROP_MARGIN_PX = 20
+MIN_CROP_AREA_RATIO = 0.08
+BLACK_BG_DELTA = 22
+BRIGHT_SLAB_PERCENTILE = 88
+BRIGHT_SLAB_DELTA = 8
+BRIGHT_SLAB_PAD_X_RATIO = 0.28
+BRIGHT_SLAB_PAD_Y_RATIO = 0.18
+EDGE_DIFF_THRESHOLD = 24.0
+EDGE_HIT_RATIO = 0.12
+EDGE_SCAN_BAND = 4
+EDGE_SCAN_MAX_RATIO = 0.45
+EDGE_SCAN_MARGIN_PX = 10
+WHITE_DESKEW_MIN_DEG = 0.3
+WHITE_DESKEW_MAX_DEG = 15.0
+LINE_DESKEW_MIN_DEG = 0.25
+LINE_DESKEW_MAX_DEG = 12.0
+LINE_DESKEW_HOUGH_THRESHOLD = 70
+ENABLE_COLOR_CORRECTION = True
+SATURATION_GAIN = 1.14
+CLAHE_CLIP_LIMIT = 1.8
+GAMMA = 1.0
+ENABLE_DEGLARE = True
+DEGLARE_VALUE_THRESH = 235
+DEGLARE_SAT_THRESH = 55
+DEGLARE_MAX_MASK_RATIO = 0.14
+DEGLARE_INPAINT_RADIUS = 2.0
+COLOR_VIBRANCE = 0.25
+HIGHLIGHT_ROLL_OFF = 16.0
 
 # digiCamControl HTTP server (enable in DCC: Tools > Settings > Webserver, port 5513)
 DCC_URL = os.environ.get("DCC_URL", "http://localhost:5513")
