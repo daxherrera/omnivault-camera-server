@@ -1,5 +1,7 @@
 # camera_bridge_dcc.py - digiCamControl (USB) edition
 import os
+import re
+import base64
 import time
 import logging
 import traceback
@@ -8,6 +10,7 @@ import argparse
 import requests
 import cv2
 import numpy as np
+import pytesseract
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
@@ -728,6 +731,49 @@ def _sharpen(img, strength=0.25):
     return cv2.addWeighted(img, 1.0 + strength, blurred, -strength, 0)
 
 
+def _ocr_preprocessed(img):
+    """Upscale and threshold an image for OCR."""
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    scale = 2
+    h, w = gray.shape
+    gray = cv2.resize(gray, (w * scale, h * scale), interpolation=cv2.INTER_CUBIC)
+    gray = cv2.adaptiveThreshold(
+        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 10
+    )
+    return gray
+
+
+def _extract_bgs_cert(img) -> str:
+    """
+    Extract BGS cert number from processed card image.
+    BGS cert numbers are 10 digits starting with '00' (e.g. '0012345678').
+    Returns the first match found, or empty string if nothing detected.
+    """
+    gray = _ocr_preprocessed(img)
+    config = '--psm 6 --oem 3 -c tessedit_char_whitelist=0123456789'
+    text = pytesseract.image_to_string(gray, config=config)
+    log.info(f"BGS cert OCR raw: {text!r}")
+    match = re.search(r'\b(00\d{6,8})\b', text)
+    if match:
+        log.info(f"BGS cert extracted: {match.group(1)}")
+        return match.group(1)
+    return ''
+
+
+def _extract_ocr_lines(img, max_lines: int = 3) -> list:
+    """
+    Extract the first `max_lines` non-empty lines of readable text from the
+    card label using full-charset Tesseract. Used for match confirmation against
+    gemrate data.
+    """
+    gray = _ocr_preprocessed(img)
+    config = '--psm 4 --oem 3'
+    text = pytesseract.image_to_string(gray, config=config)
+    log.info(f"BGS full OCR raw: {text!r}")
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    return lines[:max_lines]
+
+
 def _light_color_boost(img, sat_gain, val_gain, glare_value_threshold, glare_sat_threshold, glare_reduction):
     """Profile-driven color pop with configurable glare handling."""
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
@@ -1012,6 +1058,28 @@ def capture():
     try:
         path = camera.capture(profile_name=DEFAULT_CAPTURE_PROFILE)
         return FileResponse(path, media_type="image/jpeg", filename=os.path.basename(path))
+    except Exception as e:
+        log.error(traceback.format_exc())
+        raise HTTPException(500, str(e))
+
+
+@app.post("/capture/bgs")
+def capture_bgs():
+    try:
+        path = camera.capture(profile_name=DEFAULT_CAPTURE_PROFILE)
+        img = cv2.imread(path)
+        if img is None:
+            raise RuntimeError(f"Could not read processed image: {path}")
+        cert_number = _extract_bgs_cert(img)
+        ocr_lines = _extract_ocr_lines(img)
+        with open(path, 'rb') as f:
+            raw = f.read()
+        b64 = base64.b64encode(raw).decode('utf-8')
+        return {
+            "image": f"data:image/jpeg;base64,{b64}",
+            "certNumber": cert_number,
+            "ocrLines": ocr_lines,
+        }
     except Exception as e:
         log.error(traceback.format_exc())
         raise HTTPException(500, str(e))
