@@ -759,10 +759,6 @@ def _extract_bgs_cert(img) -> str:
     # Label content ends ~78% of the 20% crop — exclude black card area below and slab border right
     roi = label[int(lh * 0.55):int(lh * 0.78), int(lw * 0.50):int(lw * 0.90)]
     gray = _ocr_preprocessed(roi)
-    _ts = time.strftime("%H%M%S")
-    cv2.imwrite(os.path.join(CAPTURE_DIR, f'cert_roi_{_ts}.png'), roi)
-    cv2.imwrite(os.path.join(CAPTURE_DIR, f'cert_thresh_{_ts}.png'), gray)
-    log.info(f"Debug saved cert_roi_{_ts}.png and cert_thresh_{_ts}.png")
     config = '--psm 6 --oem 3'
     text = pytesseract.image_to_string(gray, config=config)
     log.info(f"BGS cert OCR raw: {text!r}")
@@ -787,9 +783,6 @@ def _extract_ocr_lines(img, max_lines: int = 3) -> list:
     # Skip Beckett logo left (~12%), stop before grade number right (~75%)
     roi = label[int(lh * 0.17):int(lh * 0.68), int(lw * 0.17):int(lw * 0.75)]
     gray = _ocr_preprocessed(roi)
-    _ts = time.strftime("%H%M%S")
-    cv2.imwrite(os.path.join(CAPTURE_DIR, f'text_roi_{_ts}.png'), roi)
-    cv2.imwrite(os.path.join(CAPTURE_DIR, f'text_thresh_{_ts}.png'), gray)
     config = '--psm 4 --oem 3'
     text = pytesseract.image_to_string(gray, config=config)
     log.info(f"BGS full OCR raw: {text!r}")
