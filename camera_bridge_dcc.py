@@ -785,7 +785,7 @@ def _extract_ocr_lines(img, max_lines: int = 3) -> list:
     lh, lw = label.shape[:2]
     # Skip black slab frame above label (~12%), stop before scores row and below-label black (~68%)
     # Skip Beckett logo left (~12%), stop before grade number right (~75%)
-    roi = label[int(lh * 0.12):int(lh * 0.68), int(lw * 0.12):int(lw * 0.75)]
+    roi = label[int(lh * 0.17):int(lh * 0.68), int(lw * 0.17):int(lw * 0.75)]
     gray = _ocr_preprocessed(roi)
     _ts = time.strftime("%H%M%S")
     cv2.imwrite(os.path.join(CAPTURE_DIR, f'text_roi_{_ts}.png'), roi)
