@@ -783,8 +783,13 @@ def _extract_ocr_lines(img, max_lines: int = 3) -> list:
     h = img.shape[0]
     label = img[0:int(h * 0.20), :]
     lh, lw = label.shape[:2]
-    roi = label[:int(lh * 0.72), int(lw * 0.12):int(lw * 0.75)]
+    # Skip black slab frame above label (~12%), stop before scores row and below-label black (~68%)
+    # Skip Beckett logo left (~12%), stop before grade number right (~75%)
+    roi = label[int(lh * 0.12):int(lh * 0.68), int(lw * 0.12):int(lw * 0.75)]
     gray = _ocr_preprocessed(roi)
+    _ts = time.strftime("%H%M%S")
+    cv2.imwrite(os.path.join(CAPTURE_DIR, f'text_roi_{_ts}.png'), roi)
+    cv2.imwrite(os.path.join(CAPTURE_DIR, f'text_thresh_{_ts}.png'), gray)
     config = '--psm 4 --oem 3'
     text = pytesseract.image_to_string(gray, config=config)
     log.info(f"BGS full OCR raw: {text!r}")
