@@ -751,13 +751,19 @@ def _extract_bgs_cert(img) -> str:
     """
     Extract BGS cert number from processed card image.
     BGS cert numbers are 10 digits starting with '00' (e.g. '0012345678').
+    The cert number sits at the bottom-right of the BGS label (top 20% of image).
     Returns the first match found, or empty string if nothing detected.
     """
-    gray = _ocr_preprocessed(img)
-    config = '--psm 6 --oem 3 -c tessedit_char_whitelist=0123456789'
+    h = img.shape[0]
+    label = img[0:int(h * 0.20), :]
+    lh, lw = label.shape[:2]
+    # Cert number is in the bottom-right portion of the label
+    roi = label[int(lh * 0.55):, int(lw * 0.55):]
+    gray = _ocr_preprocessed(roi)
+    config = '--psm 7 --oem 3 -c tessedit_char_whitelist=0123456789'
     text = pytesseract.image_to_string(gray, config=config)
     log.info(f"BGS cert OCR raw: {text!r}")
-    match = re.search(r'\b(00\d{6,8})\b', text)
+    match = re.search(r'(00\d{6,8})', text.replace(' ', ''))
     if match:
         log.info(f"BGS cert extracted: {match.group(1)}")
         return match.group(1)
@@ -769,8 +775,14 @@ def _extract_ocr_lines(img, max_lines: int = 3) -> list:
     Extract the first `max_lines` non-empty lines of readable text from the
     card label using full-charset Tesseract. Used for match confirmation against
     gemrate data.
+    The label is the top 20% of the image; text is in the left-center portion.
     """
-    gray = _ocr_preprocessed(img)
+    h = img.shape[0]
+    label = img[0:int(h * 0.20), :]
+    lh, lw = label.shape[:2]
+    # Skip the Beckett logo on the left (~12%), stay left of the grade score on the right (~75%)
+    roi = label[:int(lh * 0.72), int(lw * 0.12):int(lw * 0.75)]
+    gray = _ocr_preprocessed(roi)
     config = '--psm 4 --oem 3'
     text = pytesseract.image_to_string(gray, config=config)
     log.info(f"BGS full OCR raw: {text!r}")
