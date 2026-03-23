@@ -741,9 +741,8 @@ def _ocr_preprocessed(img):
     scale = 3
     h, w = gray.shape
     gray = cv2.resize(gray, (w * scale, h * scale), interpolation=cv2.INTER_CUBIC)
-    gray = cv2.adaptiveThreshold(
-        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 10
-    )
+    gray = cv2.GaussianBlur(gray, (3, 3), 0)
+    _, gray = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     return gray
 
 
@@ -758,10 +757,11 @@ def _extract_bgs_cert(img) -> str:
     label = img[0:int(h * 0.20), :]
     lh, lw = label.shape[:2]
     roi = label[int(lh * 0.55):, int(lw * 0.50):]
-    p1 = os.path.join(CAPTURE_DIR, 'cert_roi.png')
-    p2 = os.path.join(CAPTURE_DIR, 'cert_thresh.png')
     gray = _ocr_preprocessed(roi)
-    log.info(f"Debug write: roi={cv2.imwrite(p1, roi)} thresh={cv2.imwrite(p2, gray)} dir={CAPTURE_DIR}")
+    _ts = time.strftime("%H%M%S")
+    cv2.imwrite(os.path.join(CAPTURE_DIR, f'cert_roi_{_ts}.png'), roi)
+    cv2.imwrite(os.path.join(CAPTURE_DIR, f'cert_thresh_{_ts}.png'), gray)
+    log.info(f"Debug saved cert_roi_{_ts}.png and cert_thresh_{_ts}.png")
     config = '--psm 6 --oem 3'
     text = pytesseract.image_to_string(gray, config=config)
     log.info(f"BGS cert OCR raw: {text!r}")
