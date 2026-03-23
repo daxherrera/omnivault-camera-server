@@ -12,6 +12,10 @@ import cv2
 import numpy as np
 import pytesseract
 
+# Windows: set path to Tesseract executable if not in PATH
+if os.name == 'nt':
+    pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
