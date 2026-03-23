@@ -757,8 +757,11 @@ def _extract_bgs_cert(img) -> str:
     label = img[0:int(h * 0.20), :]
     lh, lw = label.shape[:2]
     # Cert number is in the bottom-right portion of the label
+    cv2.imwrite(r'C:\Users\OmniV\label_full.png', label)
     roi = label[int(lh * 0.50):, int(lw * 0.45):]
+    cv2.imwrite(r'C:\Users\OmniV\cert_roi.png', roi)
     gray = _ocr_preprocessed(roi)
+    cv2.imwrite(r'C:\Users\OmniV\cert_thresh.png', gray)
     config = '--psm 7 --oem 3 -c tessedit_char_whitelist=0123456789'
     text = pytesseract.image_to_string(gray, config=config)
     log.info(f"BGS cert OCR raw: {text!r}")
