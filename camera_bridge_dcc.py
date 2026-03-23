@@ -756,8 +756,8 @@ def _extract_bgs_cert(img) -> str:
     h = img.shape[0]
     label = img[0:int(h * 0.20), :]
     lh, lw = label.shape[:2]
-    # Exclude black slab border (~last 10% of width) which skews OTSU threshold
-    roi = label[int(lh * 0.55):int(lh * 0.96), int(lw * 0.50):int(lw * 0.91)]
+    # Label content ends ~78% of the 20% crop — exclude black card area below and slab border right
+    roi = label[int(lh * 0.55):int(lh * 0.78), int(lw * 0.50):int(lw * 0.90)]
     gray = _ocr_preprocessed(roi)
     _ts = time.strftime("%H%M%S")
     cv2.imwrite(os.path.join(CAPTURE_DIR, f'cert_roi_{_ts}.png'), roi)
@@ -766,8 +766,7 @@ def _extract_bgs_cert(img) -> str:
     config = '--psm 6 --oem 3'
     text = pytesseract.image_to_string(gray, config=config)
     log.info(f"BGS cert OCR raw: {text!r}")
-    cleaned = re.sub(r'\s+', '', text)
-    match = re.search(r'(00\d{8})', cleaned)
+    match = re.search(r'(?<!\d)(00\d{8})(?!\d)', text)
     if match:
         log.info(f"BGS cert extracted: {match.group(1)}")
         return match.group(1)
