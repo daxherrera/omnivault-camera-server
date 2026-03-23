@@ -736,13 +736,13 @@ def _sharpen(img, strength=0.25):
 
 
 def _ocr_preprocessed(img):
-    """Upscale and threshold an image for OCR."""
+    """Upscale and normalize contrast for OCR. No manual threshold — Tesseract LSTM handles binarization."""
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     scale = 3
     h, w = gray.shape
     gray = cv2.resize(gray, (w * scale, h * scale), interpolation=cv2.INTER_CUBIC)
-    gray = cv2.GaussianBlur(gray, (3, 3), 0)
-    _, gray = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    gray = clahe.apply(gray)
     return gray
 
 
@@ -756,16 +756,15 @@ def _extract_bgs_cert(img) -> str:
     h = img.shape[0]
     label = img[0:int(h * 0.20), :]
     lh, lw = label.shape[:2]
-    # Cert number is in the bottom-right portion of the label
-    # Cert number is on the last line, right side — tighten crop to just that line
-    roi = label[int(lh * 0.72):int(lh * 0.96), int(lw * 0.55):]
+    roi = label[int(lh * 0.55):, int(lw * 0.50):]
     cv2.imwrite(os.path.join(CAPTURE_DIR, 'cert_roi.png'), roi)
     gray = _ocr_preprocessed(roi)
     cv2.imwrite(os.path.join(CAPTURE_DIR, 'cert_thresh.png'), gray)
-    config = '--psm 7 --oem 3 -c tessedit_char_whitelist=0123456789'
+    config = '--psm 6 --oem 3'
     text = pytesseract.image_to_string(gray, config=config)
     log.info(f"BGS cert OCR raw: {text!r}")
-    match = re.search(r'(00\d{6,8})', text.replace(' ', ''))
+    cleaned = re.sub(r'(\d)\s+(\d)', r'\1\2', text)
+    match = re.search(r'(00\d{8})', cleaned)
     if match:
         log.info(f"BGS cert extracted: {match.group(1)}")
         return match.group(1)
@@ -782,7 +781,6 @@ def _extract_ocr_lines(img, max_lines: int = 3) -> list:
     h = img.shape[0]
     label = img[0:int(h * 0.20), :]
     lh, lw = label.shape[:2]
-    # Skip the Beckett logo on the left (~12%), stay left of the grade score on the right (~75%)
     roi = label[:int(lh * 0.72), int(lw * 0.12):int(lw * 0.75)]
     gray = _ocr_preprocessed(roi)
     config = '--psm 4 --oem 3'
