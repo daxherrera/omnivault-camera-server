@@ -738,12 +738,11 @@ def _sharpen(img, strength=0.25):
 def _ocr_preprocessed(img):
     """Upscale and threshold an image for OCR."""
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    scale = 2
+    scale = 3
     h, w = gray.shape
     gray = cv2.resize(gray, (w * scale, h * scale), interpolation=cv2.INTER_CUBIC)
-    gray = cv2.adaptiveThreshold(
-        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 10
-    )
+    gray = cv2.GaussianBlur(gray, (3, 3), 0)
+    _, gray = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     return gray
 
 
@@ -758,7 +757,7 @@ def _extract_bgs_cert(img) -> str:
     label = img[0:int(h * 0.20), :]
     lh, lw = label.shape[:2]
     # Cert number is in the bottom-right portion of the label
-    roi = label[int(lh * 0.55):, int(lw * 0.55):]
+    roi = label[int(lh * 0.50):, int(lw * 0.45):]
     gray = _ocr_preprocessed(roi)
     config = '--psm 7 --oem 3 -c tessedit_char_whitelist=0123456789'
     text = pytesseract.image_to_string(gray, config=config)
