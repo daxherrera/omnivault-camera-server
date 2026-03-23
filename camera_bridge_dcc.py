@@ -736,13 +736,14 @@ def _sharpen(img, strength=0.25):
 
 
 def _ocr_preprocessed(img):
-    """Upscale and normalize contrast for OCR. No manual threshold — Tesseract LSTM handles binarization."""
+    """Upscale and binarize a label crop for OCR."""
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     scale = 3
     h, w = gray.shape
     gray = cv2.resize(gray, (w * scale, h * scale), interpolation=cv2.INTER_CUBIC)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    gray = clahe.apply(gray)
+    gray = cv2.adaptiveThreshold(
+        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 10
+    )
     return gray
 
 
@@ -757,13 +758,14 @@ def _extract_bgs_cert(img) -> str:
     label = img[0:int(h * 0.20), :]
     lh, lw = label.shape[:2]
     roi = label[int(lh * 0.55):, int(lw * 0.50):]
-    cv2.imwrite(os.path.join(CAPTURE_DIR, 'cert_roi.png'), roi)
+    p1 = os.path.join(CAPTURE_DIR, 'cert_roi.png')
+    p2 = os.path.join(CAPTURE_DIR, 'cert_thresh.png')
     gray = _ocr_preprocessed(roi)
-    cv2.imwrite(os.path.join(CAPTURE_DIR, 'cert_thresh.png'), gray)
+    log.info(f"Debug write: roi={cv2.imwrite(p1, roi)} thresh={cv2.imwrite(p2, gray)} dir={CAPTURE_DIR}")
     config = '--psm 6 --oem 3'
     text = pytesseract.image_to_string(gray, config=config)
     log.info(f"BGS cert OCR raw: {text!r}")
-    cleaned = re.sub(r'(\d)\s+(\d)', r'\1\2', text)
+    cleaned = re.sub(r'\s+', '', text)
     match = re.search(r'(00\d{8})', cleaned)
     if match:
         log.info(f"BGS cert extracted: {match.group(1)}")
