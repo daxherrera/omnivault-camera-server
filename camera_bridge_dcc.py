@@ -756,7 +756,8 @@ def _extract_bgs_cert(img) -> str:
     h = img.shape[0]
     label = img[0:int(h * 0.20), :]
     lh, lw = label.shape[:2]
-    roi = label[int(lh * 0.55):, int(lw * 0.50):]
+    # Exclude black slab border (~last 10% of width) which skews OTSU threshold
+    roi = label[int(lh * 0.55):int(lh * 0.96), int(lw * 0.50):int(lw * 0.91)]
     gray = _ocr_preprocessed(roi)
     _ts = time.strftime("%H%M%S")
     cv2.imwrite(os.path.join(CAPTURE_DIR, f'cert_roi_{_ts}.png'), roi)
